@@ -6,25 +6,65 @@
 
 /* TODO: Your code here */
 
+__global__ void array_set_kernel(int num, float* data, float value){
+  int y = blockIdx.x * blockDim.x + threadIdx.x;
+  if (y >= num) {
+    return;
+  }
+  data[y] = value;
+}
+
 int DLGpuArraySet(DLArrayHandle arr, float value) { /* TODO: Your code here */
-  cudaError_t cuda_status = cudaMemset(arr->data, value, GetDataSize(arr));
-	if (cuda_status != cudaSuccess)
-	{
-		fprintf(stderr, "Failed to set array, status = %s\n", cudaGetErrorString(cuda_status));
-		return -1;
-	}
+  int n = 1;
+  for (int i = 0; i < arr->ndim; i++) {
+    n *= arr->shape[i];
+  }
+  float *array_data = (float *)arr->data;
+  dim3 threads;
+  dim3 blocks;
+  if (n <= 1024) {
+    threads.x = n;
+    blocks.x = 1;
+  } else {
+    threads.x = 1024;
+    blocks.x = (n + 1023) / 1024;
+  }
+  array_set_kernel<<<blocks, threads>>>(n, array_data, value);
   return 0;
+}
+
+__global__ void broadcast_to_kernel(int in_num, int out_num, const float* input, float* output){
+  int y = blockIdx.x * blockDim.x + threadIdx.x;
+  if(y >= in_num){
+    return;
+  }
+  for(int i=y; i< out_num; i += in_num) {
+    output[i] = input[y];
+  }
 }
 
 int DLGpuBroadcastTo(const DLArrayHandle input, DLArrayHandle output) {
   /* TODO: Your code here */
-  assert(GetDataSize(input) == GetDataSize(output));
-  cudaError_t cuda_status = cudaMemcpy(output->data, input->data, GetDataSize(output), cudaMemcpyDeviceToDevice);
-  if (cuda_status != cudaSuccess)
-	{
-		fprintf(stderr, "Failed to broadcast data, status = %s\n", cudaGetErrorString(cuda_status));
-		return -1;
-	}
+  int in_num = 1;
+  for (int i = 0; i < input->ndim; i++) {
+    in_num *= input->shape[i];
+  }
+  int out_num = 1;
+  for (int i = 0; i < output->ndim; i++) {
+    out_num *= output->shape[i];
+  }
+  dim3 blocks;
+  dim3 threads;
+  float *output_data = (float *)output->data;
+  const float *input_data = (const float *)input->data;
+  if (in_num <= 1024) {
+    threads.x = in_num;
+    blocks.x = 1;
+  } else {
+    threads.x = 1024;
+    blocks.x = (in_num + 1023) / 1024;
+  }
+  broadcast_to_kernel<<<blocks, threads>>>(in_num, out_num, input_data, output_data);
   return 0;
 }
 
@@ -34,7 +74,7 @@ __global__ void reduce_sum_axis_zero_kernel(int in_num, int out_num, const float
     return;
   }
   output_data[y] = 0;
-  for (int i = y; i < n; i += out_num) {
+  for (int i = y; i < in_num; i += out_num) {
     output_data[y] += input_data[i];
   }
 }
@@ -58,12 +98,12 @@ int DLGpuReduceSumAxisZero(const DLArrayHandle input, DLArrayHandle output) {
   dim3 threads;
   float *output_data = (float *)output->data;
   const float *input_data = (const float *)input->data;
-  if (out <= 1024) {
-    threads.x = out;
+  if (out_num <= 1024) {
+    threads.x = out_num;
     blocks.x = 1;
   } else {
     threads.x = 1024;
-    blocks.x = (out + 1023) / 1024;
+    blocks.x = (out_num + 1023) / 1024;
   }
   reduce_sum_axis_zero_kernel<<<blocks, threads>>>(in_num, out_num, input_data, output_data);
   return 0;
@@ -105,7 +145,7 @@ __global__ void matrix_elementwise_add_by_const_kernel(int n, const float* input
   if(y>n){
     return;
   }
-  output[y] = input_a[y] + val;
+  output[y] = input[y] + val;
 }
 
 int DLGpuMatrixElementwiseAddByConst(const DLArrayHandle input, float val,
@@ -126,7 +166,7 @@ int DLGpuMatrixElementwiseAddByConst(const DLArrayHandle input, float val,
     threads.x = 1024;
     blocks.x = (n + 1023) / 1024;
   }
-  matrix_elementwise_add_by_const_kernel<<<blocks, threads>>>(n, input_data, float val, output_data);
+  matrix_elementwise_add_by_const_kernel<<<blocks, threads>>>(n, input_data, val, output_data);
   return 0;
 }
 
@@ -167,7 +207,7 @@ __global__ void matrix_elementwise_multiply_by_const_kernel(int n, const float* 
   if(y>n){
     return;
   }
-  output[y] = input_a[y] * val;
+  output[y] = input[y] * val;
 }
 
 int DLGpuMatrixMultiplyByConst(const DLArrayHandle input, float val,
@@ -188,11 +228,11 @@ int DLGpuMatrixMultiplyByConst(const DLArrayHandle input, float val,
     threads.x = 1024;
     blocks.x = (n + 1023) / 1024;
   }
-  matrix_elementwise_multiply_by_const_kernel<<<blocks, threads>>>(n, input_data, float val, output_data);
+  matrix_elementwise_multiply_by_const_kernel<<<blocks, threads>>>(n, input_data, val, output_data);
   return 0;
 }
 
-__global__ void matrix_multiply_kernel(){
+__global__ void matrix_multiply_kernel(const float* A, const float* B, float* C, int rowA, int colA, int rowB, int colB, bool transA, bool transB){
   float Cvalue = 0.0;
   int r = blockIdx.x * blockDim.x + threadIdx.x;
   int c = blockIdx.y * blockDim.y + threadIdx.y;
@@ -207,7 +247,7 @@ __global__ void matrix_multiply_kernel(){
     assert(rowA == rowB);
     if(r>=colA || c >= colB) return;
     for(int e=0; e<rowA; ++e){
-      Cvalue += (A[e * rowA + r]) * (B[e * colB + c])
+      Cvalue += (A[e * rowA + r]) * (B[e * colB + c]);
     }
     C[r * colB + c] = Cvalue;
   } else if(!transA && transB){
@@ -244,7 +284,7 @@ int DLGpuMatrixMultiply(const DLArrayHandle matA, bool transposeA,
   const int BLOCK_SIZE = 16;
   dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
   dim3 dimGrid((max(rowA, colA) + dimBlock.x - 1) / dimBlock.x, (max(rowB, colB) + dimBlock.y - 1) / dimBlock.y);
-  MatMulKernel<<<dimGrid, dimBlock>>>(matA_data, matB_data, matC_data, rowA, colA, rowB, colB, transposeA, transposeB);
+  matrix_multiply_kernel<<<dimGrid, dimBlock>>>(matA_data, matB_data, matC_data, rowA, colA, rowB, colB, transposeA, transposeB);
   return 0;
 }
 
@@ -253,7 +293,7 @@ __global__ void relu_kernel(int n, const float* input, float* output){
   if(y>n){
     return;
   }
-  output[y] = input_a[y] > 0 ? input_a[y] : 0;
+  output[y] = input[y] > 0 ? input[y] : 0;
 }
 
 int DLGpuRelu(const DLArrayHandle input, DLArrayHandle output) {
@@ -328,8 +368,6 @@ __global__ void matrix_softmax_kernel(int nrow, int ncol, const float *input, fl
   for (int x = 0; x < ncol; ++x) {
     sum += exp(input[x] - maxval);
   }
-  // Compute per-row loss.
-  float loss = 0;
   for (int x = 0; x < ncol; ++x) {
     output[x] = exp(input[x] - maxval) / sum;
   }

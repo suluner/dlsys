@@ -225,7 +225,7 @@ class MulOp(Op):
             return input_shapes[0]
         elif input_shapes[0] == (1,):
             return input_shapes[1]
-        elif: input_shapes[1] == (1,):
+        elif input_shapes[1] == (1,):
             return input_shapes[0]
         else:
             raise ValueError("The input_shapes are mismatched")
