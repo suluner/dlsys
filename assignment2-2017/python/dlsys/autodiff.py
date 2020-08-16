@@ -375,7 +375,7 @@ class ZerosLikeOp(Op):
         """If input_shape is a vector, simpler to return (1,)"""
         """TODO: Your code here"""
         assert len(input_shapes) == 1
-        return input_shapesp[0]
+        return input_shapes[0]
 
 
 class OnesLikeOp(Op):
