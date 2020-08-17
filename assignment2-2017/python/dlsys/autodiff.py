@@ -612,6 +612,7 @@ class Executor(object):
         self.node_to_shape_map = None
         self.node_to_arr_map = None
         self.feed_shapes = None
+        self.memory_pool = None
 
     def infer_shape(self, feed_shapes):
         """Given shapes of feed_dict nodes, infer shape for all nodes in graph.
